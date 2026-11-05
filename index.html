@@ -215,7 +215,7 @@ const byId = Object.fromEntries(DESIGNS.map((d) => [d.id, d]));
 // ---- state ----------------------------------------------------------------
 let mine = { likes: [], passes: [] };       // this viewer's choices
 let all = [];                               // every voter's doc, from the store
-let db = null, myRef = null, loaded = false;
+let db = null, myRef = null, loaded = false, refreshTally = () => {};
 let deckOrder = DESIGNS.map((d) => d.id);
 
 const seen = () => new Set([...mine.likes, ...mine.passes]);
@@ -231,6 +231,7 @@ async function save() {
     setSave('pending');
     await myRef.set({ likes: mine.likes.slice(), passes: mine.passes.slice(), updatedAt: new Date().toISOString() });
     setSave('ok');
+    if (!$('done').hidden) refreshTally(true);
   } catch (e) {
     setSave('bad', 'บันทึกผลไม่สำเร็จ (' + ((e && e.code) || 'error') + ') เลือกต่อได้ ระบบจะลองบันทึกอีกครั้งในการปัดครั้งถัดไป');
   } finally {
@@ -251,7 +252,7 @@ function setSave(state, msg) {
 function show(view) {
   for (const v of ['intro', 'play', 'done']) $(v).hidden = v !== view;
   if (view === 'play') renderDeck();
-  if (view === 'done') renderResults();
+  if (view === 'done') { renderResults(); refreshTally(); }
   window.scrollTo(0, 0);
 }
 function startLabel() {
@@ -316,7 +317,9 @@ function bindDrag(card) {
 }
 
 // ---- results --------------------------------------------------------------
+let remote = null;   // { players, hearts } from count queries
 function tally() {
+  if (db && remote) return { players: remote.players, hearts: remote.hearts, total: Object.values(remote.hearts).reduce((a, b) => a + b, 0) };
   const voters = (db ? all : [mine]).filter((v) => (v.likes?.length || 0) + (v.passes?.length || 0) > 0);
   const hearts = Object.fromEntries(DESIGNS.map((d) => [d.id, 0]));
   const shown = Object.fromEntries(DESIGNS.map((d) => [d.id, 0]));
@@ -347,7 +350,7 @@ function renderResults() {
     </li>`;
   }).join('');
   $('board-note').textContent = !db ? 'โหมดทดลอง: ตัวเลขนี้มาจากการเลือกของคุณเท่านั้น ไม่ได้บันทึกไว้'
-    : !loaded ? 'กำลังโหลดผลโหวตของทุกคน…'
+    : !loaded ? ($('players').textContent === 'โหลดผลโหวตไม่ได้' ? 'โหลดผลโหวตไม่ได้ ลองรีเฟรชหน้าอีกครั้ง' : 'กำลังโหลดผลโหวตของทุกคน…')
     : t.players ? `เปอร์เซ็นต์คิดจากจำนวนคนที่เล่นแล้ว ${t.players} คน · แบบที่มีกรอบเหลืองคือแบบที่ได้หัวใจมากที่สุดตอนนี้`
     : 'ยังไม่มีใครโหวต เป็นคนแรกเลย';
   const left = remaining().length;
@@ -401,20 +404,31 @@ function voterId() {
     setSave('bad'); renderPlayersChip(); return;
   }
   const ref = f.doc(fs, COLL, uid);
-  myRef = { set: (v) => f.setDoc(ref, { likes: v.likes, passes: v.passes, at: f.serverTimestamp() }) };
+  myRef = { set: (v) => f.setDoc(ref, { likes: v.likes, passes: v.passes, n: v.likes.length + v.passes.length, at: f.serverTimestamp() }) };
   db = fs;
-  let first = true;
-  f.onSnapshot(f.collection(fs, COLL), (snap) => {
-    all = snap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
-    if (!snap.metadata.fromCache) { loaded = true; clearTimeout(timer); }
-    if (first) {
-      first = false;
-      const own = all.find((v) => v.id === uid);
-      if (own && seen().size === 0) { mine = { likes: own.likes || [], passes: own.passes || [] }; startLabel(); }
-    }
-    renderPlayersChip();
-    if (!$('done').hidden) renderResults();
-  }, () => { clearTimeout(timer); $('players').textContent = 'โหลดผลโหวตไม่ได้'; });
+  // Cheap on purpose (Firebase free plan): no live listener over every vote. Results come from
+  // count queries, about 1 read each: 1 for players + 1 per design, run on load and when results open.
+  const coll = f.collection(fs, COLL);
+  let busy = false, last = 0;
+  refreshTally = async (force) => {
+    if (busy || (!force && Date.now() - last < 15000)) return;
+    busy = true;
+    try {
+      const qs = [f.query(coll, f.where('n', '>', 0)), ...IDS.map((id) => f.query(coll, f.where('likes', 'array-contains', id)))];
+      const cs = await Promise.all(qs.map((q) => f.getCountFromServer(q).then((r) => r.data().count)));
+      remote = { players: cs[0], hearts: Object.fromEntries(IDS.map((id, i) => [id, cs[i + 1]])) };
+      loaded = true; last = Date.now(); clearTimeout(timer);
+      renderPlayersChip();
+      if (!$('done').hidden) renderResults();
+    } catch (e) {
+      clearTimeout(timer); if (!loaded) { $('players').textContent = 'โหลดผลโหวตไม่ได้'; if (!$('done').hidden) renderResults(); }
+    } finally { busy = false; }
+  };
+  try {
+    const own = await f.getDoc(ref);
+    if (own.exists() && seen().size === 0) { const v = own.data(); mine = { likes: v.likes || [], passes: v.passes || [] }; startLabel(); }
+  } catch (e) {}
+  refreshTally();
 })();
 startLabel();
 renderPlayersChip();
