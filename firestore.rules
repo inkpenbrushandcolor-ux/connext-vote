@@ -1,0 +1,23 @@
+rules_version = '2';
+// CONNEXT swipe vote. Paste this into Firebase console > Firestore Database > Rules, then Publish.
+// One doc per browser (random id) holding the designs it liked and passed.
+// Anyone can read the tally; a voter can only write likes/passes made of the 10 design ids; nobody can delete.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function validVote(d) {
+      return d.keys().hasOnly(['likes', 'passes', 'n', 'at']) && d.keys().hasAll(['likes', 'passes', 'n', 'at'])
+        && d.likes is list && d.likes.size() <= 10
+        && d.passes is list && d.passes.size() <= 10
+        && d.likes.hasOnly(['01', '02', '03', '04', '05', '06', '07', '08', '09', '10'])
+        && d.passes.hasOnly(['01', '02', '03', '04', '05', '06', '07', '08', '09', '10'])
+        && d.n is int && d.n == d.likes.size() + d.passes.size()
+        && d.at == request.time;
+    }
+
+    match /connextVotes/{voterId} {
+      allow read: if true;
+      allow create, update: if voterId.matches('^[a-z0-9]{16,40}$') && validVote(request.resource.data);
+      allow delete: if false;
+    }
+  }
+}
