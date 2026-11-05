@@ -252,7 +252,7 @@ function setSave(state, msg) {
 function show(view) {
   for (const v of ['intro', 'play', 'done']) $(v).hidden = v !== view;
   if (view === 'play') renderDeck();
-  if (view === 'done') { renderResults(); refreshTally(); }
+  if (view === 'done') { renderResults(); refreshTally(true); }
   window.scrollTo(0, 0);
 }
 function startLabel() {
@@ -374,9 +374,9 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowLeft') decide(false);
 });
 
-// ---- store (Firebase project tiffany-booking, collection connextVotes) ------
+// ---- store (Firebase project connext-vote, collection connextVotes) ------
 // These config values are public by design; firestore.rules is what protects the data.
-const FB_CONFIG = {apiKey:"AIzaSyDqCxc3RMo5SzxC8-kUIpZZK_MUyw9DWFs",authDomain:"tiffany-booking.firebaseapp.com",projectId:"tiffany-booking",storageBucket:"tiffany-booking.firebasestorage.app",messagingSenderId:"96340997981",appId:"1:96340997981:web:63fbec6962ff7d18711ab4"};
+const FB_CONFIG = {apiKey:"AIzaSyCdQIMzQKBnu-CtAqBYCDRYIucU5ZxGFJo",authDomain:"connext-vote.firebaseapp.com",projectId:"connext-vote",storageBucket:"connext-vote.firebasestorage.app",messagingSenderId:"1078272756863",appId:"1:1078272756863:web:06a1c67c27f045f7ad034a"};
 const FB_SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const COLL = 'connextVotes';
 // one random id per browser, so a person counts once and can come back to finish
@@ -409,9 +409,10 @@ function voterId() {
   // Cheap on purpose (Firebase free plan): no live listener over every vote. Results come from
   // count queries, about 1 read each: 1 for players + 1 per design, run on load and when results open.
   const coll = f.collection(fs, COLL);
-  let busy = false, last = 0;
+  let busy = false, again = false, last = 0;
   refreshTally = async (force) => {
-    if (busy || (!force && Date.now() - last < 15000)) return;
+    if (busy) { if (force) again = true; return; }
+    if (!force && Date.now() - last < 15000) return;
     busy = true;
     try {
       const qs = [f.query(coll, f.where('n', '>', 0)), ...IDS.map((id) => f.query(coll, f.where('likes', 'array-contains', id)))];
@@ -422,7 +423,7 @@ function voterId() {
       if (!$('done').hidden) renderResults();
     } catch (e) {
       clearTimeout(timer); if (!loaded) { $('players').textContent = 'โหลดผลโหวตไม่ได้'; if (!$('done').hidden) renderResults(); }
-    } finally { busy = false; }
+    } finally { busy = false; if (again) { again = false; refreshTally(true); } }
   };
   try {
     const own = await f.getDoc(ref);
